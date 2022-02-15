@@ -1,0 +1,637 @@
+---
+title: "**Opportunity Youth in Philadelphia**"
+knit: (function(input_file, encoding) {
+  out_dir <- 'docs';
+  rmarkdown::render(input_file,
+ encoding=encoding,
+ output_file=file.path(dirname(input_file), out_dir, 'index.html'))})
+output:
+  html_document:
+    theme: flatly
+    toc: yes
+    toc_depth: 5
+    toc_float: yes
+
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+
+
+
+```
+
+```{r include=FALSE}
+library(tidyverse)
+library(ipumsr)
+library(leaflet)
+library(tidycensus)
+library(srvyr)
+library(ggplot2)
+library(scales)
+library(plotly)
+library(formattable)
+library(janitor)
+
+#Reading in the IPUMS File
+setwd("/Users/matthew/OneDrive - Philadelphia Works Inc/Research and Special Reporting/Briefs/Opportunity Youth/Outputs and Data")
+ipums_ddi <- read_ipums_ddi("ddi.xml")
+ipums_data <- read_ipums_micro(ipums_ddi, verbose=F)
+
+#Adding the labels and dropping duplicate variables
+ipums_data %>%
+  select_if(is.labelled)
+
+
+ipums_data <- ipums_data %>%
+  mutate(
+    Sex = as_factor(lbl_clean(SEX)),
+    Citizen = as_factor(lbl_clean(CITIZEN)),
+    Migration = as_factor(lbl_clean(MIGRATE1)),
+    Foodstamp = as_factor(lbl_clean(FOODSTMP)),
+    Hispanic = as_factor(lbl_clean(HISPAN)),
+    School = as_factor(lbl_clean(SCHOOL)),
+    Degfield = as_factor(lbl_clean(DEGFIELD)),
+    Empstat = as_factor(lbl_clean(EMPSTAT)),
+    Empstat_detail = as_factor(lbl_clean(EMPSTATD)),
+    Looking = as_factor(lbl_clean(LOOKING)),
+    Available = as_factor(lbl_clean(AVAILBLE)),
+    Weeks_worked = as_factor(lbl_clean(WKSWORK2)),
+    Inc_ssd = as_factor(lbl_clean(INCSS)),
+    Inc_welfr = as_factor(lbl_clean(INCWELFR)),
+    Inc_ssi = as_factor(lbl_clean(INCSUPP)), 
+    Diff_cog = as_factor(lbl_clean(DIFFREM)),
+    Diff_phys = as_factor(lbl_clean(DIFFPHYS)),
+    Diff_mob = as_factor(lbl_clean(DIFFMOB)),
+    Diff_care = as_factor(lbl_clean(DIFFCARE)),
+    Diff_sense = as_factor(lbl_clean(DIFFSENS)),
+    English = as_factor(lbl_clean(SPEAKENG)),
+    Family_unity = as_factor(lbl_clean(FAMUNIT)),
+    Subfam = as_factor(lbl_clean(SUBFAM)),
+    Subfam_type = as_factor(lbl_clean(SFTYPE)),
+    Poverty = cut(POVERTY, 
+                  breaks=c(-Inf, 0, 100, 200, Inf), 
+                  labels=c("Poverty Not Determined",
+                           "Below 100% Poverty",
+                           "Between 100% and 200% Poverty", 
+                           "Above 200% Poverty")), 
+    Deep_Poverty = cut(POVERTY,
+                       breaks=c(-Inf,0,50,Inf),
+                       labels=c("Poverty Not Determined", "Living in Deep Poverty", "Not Living in Deep Poverty")),
+    .keep="unused")
+
+ipums_data <- ipums_data %>%
+  mutate(Age.Char = as_factor(lbl_clean(AGE)))
+
+ipums_data$Poverty <- factor(ipums_data$Poverty, levels = c("Below 100% Poverty",
+                                                            "Between 100% and 200% Poverty", 
+                                                            "Above 200% Poverty",
+                                                            "Poverty Not Determined"))
+
+
+#Recoding the Education Variable to Useful Categories
+library(car)
+ipums_data$EDUCD <- as.integer(ipums_data$EDUCD)
+ipums_data$Education <- recode(ipums_data$EDUCD,
+                               "1 = NA;
+                          2:61='Less than High School';
+                          62:64='High School Diploma or GED';
+                          65:71='Some College';
+                          81='Associate Degree';
+                          101:116 = 'Bachelor Degree or Higher'")
+
+ipums_data$Education <- dplyr::recode(ipums_data$Education,
+                               `Associate Degree` = "Associate's Degree", 
+                               `Bachelor Degree or Higher` = "Bachelor's Degree or Higher", 
+                               `NA` = "NA",
+                               `Less than High School` = "Less than High School",
+                               `High School Diploma or GED` = "High School Diploma or GED",
+                               `Some College` = "Some College"
+                               )
+
+ipums_data$High_school <- recode(ipums_data$EDUCD,
+                                 "1 = NA;
+                               2:61 = 'Less than High School Diploma or GED';
+                               62:Inf = 'High School Diploma or GED or Greater'")                         
+
+#Recoding the Race and Hispanic Variables to Create one Race and Ethnicity Variable
+ipums_data$Race.Eth <- as.integer(ipums_data$RACE)
+ipums_data$Race.Eth <- recode(ipums_data$Race.Eth,
+                              "1 = 'White';
+                              2 = 'Black or African American';
+                              4:6 = 'Asian';
+                              8:9 = 'Two or More Races';
+                              3 = 'American Indian';
+                              7 = 'Other Race'")
+
+ipums_data$Race.Eth <- ifelse(ipums_data$Hispanic != "Not Hispanic", "Hispanic of Any Race", ipums_data$Race.Eth)
+
+
+ipums_data$assistance <- recode(ipums_data$Inc_welfr,
+                           "0 = 'Not Receiving';
+                            1:99998 = 'Yes, Receiving';
+                            99999 = 'Not Reported'")
+
+ipums_data$assistance <- as.factor(ipums_data$assistance)
+
+ipums_data$Foodstamp <- as.character(ipums_data$Foodstamp) %>% dplyr::recode(No = "Not Receiving", Yes = "Yes, Receiving")
+                                
+ipums_data$Foodstamp <- as.factor(ipums_data$Foodstamp)
+
+ipums_data$BPL <- as.numeric(ipums_data$BPL)
+ipums_data$Nativity <- ifelse(ipums_data$BPL > 120, "Foreign-Born", "Native-Born")
+ipums_data$Nativity <- as.factor(ipums_data$Nativity)
+
+ipums_data$Children <- ifelse(ipums_data$NCHILD > 0, "Own Children in Household", "No Children, or Own Children Not in Household")
+
+
+
+#Subsetting the data by survey (1 year and 5 year) and county
+ipums_philly_1 <- subset(ipums_data, COUNTYFIP == 101 & SAMPLE == 201901 & AGE <= 24 & AGE >=16)
+ipums_philly_5 <- subset(ipums_data, COUNTYFIP == 101 & SAMPLE == 201903 & AGE <= 24 & AGE >=16)
+
+#Creating Opportunity Youth Variable
+ipums_philly_5 <- ipums_philly_5 %>%
+  mutate(Opportunity_Youth = ifelse(Empstat=="Employed" | School=="Yes, in school", 
+                                    "Employed or Enrolled", 
+                                    "Opportunity Youth"))
+ipums_philly_1 <- ipums_philly_1 %>%
+  mutate(Opportunity_Youth = ifelse(Empstat=="Employed" | School=="Yes, in school", 
+                                    "Employed or Enrolled", 
+                                    "Opportunity Youth"))
+
+
+#Setting up the survey weights and replicate weights (https://github.com/mnpopcenter/ipumsr/issues/50)
+YR1_Person_Srvy <- as_survey(ipums_philly_1, weights=PERWT, repweights = matches("REPWTP[1-80]"), type = "Fay", rho=0.5, mse = T)
+YR5_Person_Srvy <- as_survey(ipums_philly_5, weights=PERWT, repweights = matches("REPWTP[1-80]"), type = "Fay", rho=0.5, mse = T)
+
+
+library(sf)
+library(tigris)
+library(tmap)
+library(leaflet)
+#zones <- st_read("S:/Research/Research, Policy and Innovation/Mapping Library/Planning Zones/PhilaPlanningZones_raw.shp")
+#zones$name <- as.character(zones$name)
+
+pumas <- pumas("PA", class="sf")
+pumas$PUMACE10 <- as.numeric(pumas$PUMACE10)
+
+```
+|     Matthew Hutton | February 2021
+
+<br>
+
+## **Introduction**
+Defined as young adults between the ages of 16 and 24 who are neither employed nor enrolled in school, Opportunity Youth have historically been overrepresented by individuals of color as well as individuals living in poverty. 
+
+Before discussing the most recent demographic profile in more detail, the following sections first highlight the spatial distribution, prevalence of poverty, educational attainment, labor force participation, and English language ability of Opportunity Youth in Philadelphia. In particular, the section discussing educational attainment offers an avenue for further research. That is, despite relatively high levels of education as well as an apparent desire to participate in the labor force, Opportunity Youth remain excluded. Additional exploration of the ACS as well as the Current Population Survey (CPS) may offer insight into the specific barriers faced by Philadelphia's Opportunity Youth. Additionally, as more data become available, future analysis should focus on the specific impacts of the COVID-19 pandemic on this population. 
+
+<br>
+
+<b>A Note on Data Availability and Limitations</b>
+
+While the American Community Survey continues to provide the most complete picture of the American population, the instrument does have limitations. Important among these is the annual sample size (or number of people who completed the survey). While the data for the ACS is released on an annual basis (with a one- to two-year lag), the survey's small sample size produces relatively large margins of error. 
+
+To overcome this, statisticians and demographers at the Census Bureau compile five years’ worth of survey responses into a single data file. While this increases the sample size, it decreases temporal clarity. Thus, researchers are often left with a trade-off: sacrifice the novelty of more recent data or forego the relative accuracy of a broader sample. 
+
+Here, we demonstrate this difference in the first set of tables. Each attempts to estimate the number of young adults in Philadelphia. However, the first uses the one-year estimates, while the second uses the five-year estimates. Note that the margins of error associated with the one-year estimates are significantly larger, potentially calling into question the validity and usefulness of the results. For this reason, we have chosen to rely on the five-year (2015 to 2019) sample. 
+
+
+<br>
+<br>
+
+## **Overall Results**
+
+According to the 2019 five-year estimates of the ACS, there are approximately 200,000 individuals between the ages of 16 and 24 living in Philadelphia. Of these, roughly 30,000 (15%) are classified as Opportunity Youth.
+
+<br>
+
+<b>Figure One: Young Adults (16 to 24), One-Year Estimates of the 2019 ACS</b>
+```{r 1YR Counts, echo=FALSE, fig.width=7, message=FALSE, warning=FALSE, paged.print=FALSE, fig.align="center"}
+
+#Opportunity Youth
+YR1_Person_Srvy %>% 
+  group_by(Opportunity_Youth) %>%
+  summarize(total=survey_total(vartype="ci"),
+            share = survey_mean()) %>%
+  drop_na() %>%
+  mutate(margin=round((total_upp-total),0),
+         share=round(share*100)) %>%
+  mutate(margin = comma(margin, digits=0)) %>%
+  mutate(margin = as.factor(paste0("+/- ", margin)))%>%
+  #adorn_totals("row", fill="--") %>%
+  select(c(Opportunity_Youth, total, margin, share))%>%
+  rename(" " = Opportunity_Youth, 
+         "Count of Young Adults" = total,
+         "Margin of Error" = margin,
+         "Share of Young Adults (%)" = share) %>%
+  formattable(align=c("l","c","c","r"), list(
+    " " = formatter("span", style = ~ style(color = "black",font.weight = "bold")),
+    area(col=4) ~ color_bar(color="#a6bddb",fun="proportion"),
+    area(col=2) ~ function(x) comma(x, digits=0)))
+  
+```
+<i>Source: American Community Survey One-Year Estimates, 2019; IPUMS.</i> 
+
+<br>
+
+<b>Figure Two: Young Adults (16 to 24), Five-Year Estimates of the 2015-2019 ACS</b>
+```{r 5YR Counts, echo=FALSE, fig.width=7, message=FALSE, warning=FALSE, fig.align="center"}
+
+#Opportunity Youth
+YR5_Person_Srvy %>% 
+  group_by(Opportunity_Youth) %>%
+  summarize(total=survey_total(vartype="ci"),
+            share = survey_mean()) %>%
+  drop_na() %>%
+  mutate(margin=round((total_upp-total),0),
+         share=round(share*100)) %>%
+  mutate(margin = comma(margin, digits=0)) %>%
+  mutate(margin = as.factor(paste0("+/- ", margin)))%>%
+  #adorn_totals("row", fill="--") %>%
+  select(c(Opportunity_Youth, total, margin, share))%>%
+  rename(" " = Opportunity_Youth, 
+         "Count of Young Adults" = total,
+         "Margin of Error" = margin,
+         "Share of Young Adults (%)" = share) %>%
+  formattable(align=c("l","c","c","r"), list(
+    " " = formatter("span", style = ~ style(color = "black",font.weight = "bold")),
+    area(col=4) ~ color_bar(color="#a6bddb",fun="proportion"),
+    area(col=2) ~ function(x) comma(x, digits=0)))
+  
+
+
+```
+<i>Source: American Community Survey Five-Year Estimates, 2015-2019; IPUMS.</i> 
+
+<br>
+<br>
+
+## **Geography**
+
+Though spread across the city, Philadelphia's Opportunity Youth population is concentrated in neighborhoods to the north and northeast of the city's center. Below, Figure Three maps this distribution with public-use microdata areas (PUMAs), the most detailed level of geography available for these data. 
+
+<br>
+
+<b>Figure Three: Young Adults (16 to 24), Five-Year Estimates of the 2015-2019 ACS</b>
+```{r echo=FALSE, fig.align="center", fig.width=8, message=FALSE, warning=FALSE, paged.print=FALSE}
+
+
+YR5_Person_Srvy$variables$PUMA <- as.character(YR5_Person_Srvy$variables$PUMA)
+
+phl_oy <- YR5_Person_Srvy %>%
+  group_by(PUMA, Opportunity_Youth) %>%
+  summarize(total=survey_total(vartype="ci"))
+
+phl_oy <-phl_oy %>% filter(Opportunity_Youth == "Opportunity Youth")
+phl_oy$PUMA <- as.numeric(phl_oy$PUMA)
+
+oy_map <- tigris::geo_join(pumas, phl_oy, "PUMACE10", "PUMA", how="inner")
+
+tmap_mode('view')
+
+
+tm_basemap(leaflet::providers$Stamen.TonerBackground, alpha = .2) +
+  tm_shape(oy_map) +
+  tm_polygons(col="total",
+              title = "Opportunity Youth",
+              palette="Blues",
+              id="PUMA",
+              alpha=.8,
+              border.col = "white", 
+              border.alpha = .9,
+              style = "cont",
+              popup.vars = c("Opportunity Youth" = "total")) +
+  #tm_text("PUMACE10") +
+  #tm_shape(zones) +
+  #tm_polygons(border.col = "black", alpha = 0) +
+  tm_compass(type = "arrow", position = c("left", "top")) +
+  tm_scale_bar()+
+  tm_layout(frame = FALSE,
+            legend.outside=T,
+            legend.position= c("right","bottom"),
+            legend.format = "$") +
+   tm_view(set.view=11, 
+          text.size.variable = F, set.zoom.limits = c(10,12))
+```
+<i>Source: American Community Survey Five-Year Estimates, 2015-2019; IPUMS.</i> 
+
+<br>
+<br>
+
+## **Poverty**
+In Philadelphia, Opportunity Youth are disproportionately burdened by poverty. Forty-nine percent of Opportunity Youth live below the poverty line, while just 26% of employed or enrolled young adults live in poverty. In Figure Four below, error bars represent the 95% confidence interval, showing that within all margins of error, Opportunity Youth are disproportionately impoverished. 
+
+Further still, Opportunity Youth are also much more likely to live in deep poverty, or below 50% of the poverty threshold (Figure Six). According to the five-year estimates, more than one-quarter of all unemployed and unenrolled young adults live in deep poverty. 
+
+Note that a large share of the enrolled and employed population did not have their poverty status determined. This is likely due to college enrollment: the ACS does not calculate poverty for individuals living in “Group Quarters," including on-campus housing. 
+
+<br>
+
+<b>Figure Four: Prevalence of Poverty Among Philadelphia's Young Adults (Counts), 2019</b>
+```{r echo=FALSE, fig.width=10, fig.align="center"}
+#All Youth Poverty and Employment/Enrollment
+YR5_Person_Srvy %>% 
+  group_by(Opportunity_Youth, Poverty) %>%
+  summarize(total=survey_total(vartype="ci"),
+            share = survey_mean())%>%
+  drop_na() %>%
+  ggplot(aes(x=Opportunity_Youth, y=total, fill=Poverty, label = scales::comma(round(total,-2), accuracy=1), ymax=total_upp, ymin=total_low))+
+  geom_col(position=position_dodge(), color="white", alpha = .8)+
+  scale_fill_manual(values = c("#a39d93","#002d46","#005a8d", "#47525f"))+
+  theme_minimal()+
+  geom_text(vjust = 0, y=-5500,
+            position = position_dodge(.9), size=3.5, fontface="bold") +
+  scale_y_continuous(labels=comma_format(accuracy=1),limits=c(-10000,NA), breaks=scales::pretty_breaks(n = 6))+
+  labs(x=NULL,y="Young Adults")+
+  theme( 
+    legend.position="bottom", 
+    legend.title=element_blank(), 
+    axis.text.x = element_text(face="bold"), 
+    axis.title.y = element_text(face="bold"),
+    panel.grid.major.x = element_blank()) +
+  geom_linerange(position = position_dodge(width = 0.9), flatten = 0.5)+
+  geom_hline(aes(yintercept = 0))
+
+
+```
+<i>Source: American Community Survey Five-Year Estimates, 2015-2019; IPUMS.</i> 
+
+<br>
+
+<b>Figure Five: Prevalence of Poverty Among Philadelphia's Young Adults (Shares), 2019</b>
+```{r fig.width=10}
+YR5_Person_Srvy %>% 
+  group_by(Opportunity_Youth, Poverty) %>%
+  summarize(total=survey_total(vartype="ci"),
+            share = survey_mean(vartype="ci"))%>%
+  drop_na() %>%
+  ggplot(aes(x=Opportunity_Youth, y=share, fill=reorder(Poverty, share), 
+             label = ifelse(share>=.05, scales::percent(share, accuracy = 1), ""), ymax=share_upp, ymin=share_low))+
+  geom_col(position="stack", color="white", alpha = .8)+
+  scale_fill_manual(values = c("#a39d93","#002d46","#005a8d", "#47525f"))+
+  theme_minimal()+
+  geom_text(position = position_stack(vjust=.5), fontface="bold", color="white") +
+  scale_y_continuous(labels= percent_format(accuracy=1), limits=c(NA,NA), breaks=scales::pretty_breaks(n = 6))+
+  labs(x=NULL,y="Young Adults")+
+  theme( 
+    legend.position="bottom", legend.title=element_blank(), 
+    axis.title.x = element_text(face="bold"),
+    axis.title.y = element_text(face="bold"),
+    axis.text.y = element_text(face="bold"),
+    panel.grid.major.x = element_blank())+
+  guides(labels=guide_legend(reverse=T)) +
+  guides(fill = guide_legend(reverse = TRUE)) +
+  #geom_linerange(position = position_dodge(width = 0.9), flatten = 0.5)+
+  #geom_hline(aes(yintercept = 0)) +
+  coord_flip()
+```
+<i>Source: American Community Survey Five-Year Estimates, 2015-2019; IPUMS.</i> 
+
+<br>
+
+<b>Figure Six: Prevalence of Deep Poverty Among Philadelphia's Young Adults, 2019</b>
+```{r fig.width=10, fig.align="center"}
+#All Youth Deep Poverty and Employment/Enrollment
+YR5_Person_Srvy %>% 
+  group_by(Opportunity_Youth, Deep_Poverty) %>%
+  summarize(total=survey_total(),
+            share = survey_mean())%>%
+  drop_na()%>%
+  ggplot(aes(x=Opportunity_Youth, y=total, fill=Deep_Poverty, label = scales::percent(share, accuracy =1)))+
+  geom_col(position=position_dodge(), color="white",alpha=.8)+
+  scale_fill_manual(values = c("#a39d93","#002d46","#005a8d"))+
+  theme_minimal()+
+  geom_text(vjust=-.3,
+            position = position_dodge(0.9), size=3.5, fontface="bold") +
+  scale_y_continuous(labels=comma_format(accuracy=1))+
+  labs(x=NULL,y="Young Adults")+
+  theme(
+        legend.position="bottom", legend.title=element_blank(), 
+        axis.text.x = element_text(face="bold"), 
+        axis.title.y = element_text(face="bold"),
+        panel.grid.major.x = element_blank())+
+          geom_hline(aes(yintercept = 0))
+```
+<i>Source: American Community Survey Five-Year Estimates, 2015-2019; IPUMS.</i> 
+
+<br>
+<br>
+
+## **Education and Labor Force Participation**
+
+Relative to their enrolled or employed peers, Philadelphia’s Opportunity Youth population is much more likely to have a high school diploma (rather than a higher level of education), with 55% having this level of educational attainment. An additional 18% have completed some college, 1% an Associate’s degree, and 5% a Bachelor’s degree or higher. Combined, more than 79% (or roughly 24,000) of the 30,000 Opportunity Youth individuals in Philadelphia have completed at least a high school diploma. 
+
+Meanwhile, despite the cohort’s overall educational achievements, 21% (or roughly 6,000) have not earned a high school diploma. And, given their unenrolled status, these individuals are not likely to complete their high school education in the near future. 
+
+Among the broader population, the possession of a high school diploma is thought to greatly improve employment outcomes. However, for Opportunity Youth, this does not appear to be necessarily true. Of those unemployed and unenrolled, 9,000 indicated that they were attempting to find employment. Eighty-seven percent of these had at least a high school diploma. At the surface, the relatively high level of educational attainment among Opportunity Youth suggests that these individuals have disconnected from the labor force for complex reasons. That is, their status as Opportunity Youth is not caused by a simple lack of education or skills. 
+
+For policy makers, these data show that educational attainment alone does not improve employment outcomes. Investments which seek to target Opportunity Youth must not simply fund formal education, they must include direct job services. Workforce intermediaries like Philadelphia Works can play a vital role, recognizing the unique needs of each individual and focusing on stable, high-quality employment opportunities. 
+
+If anything, we can perhaps take from this a revised mental picture. Young people in Philadelphia have not disconnected for a lack of trying. The vast majority have at least completed high school, and a large share are actively seeking employment. For researchers and policy makers alike, more work is needed to better understand the barriers these young people face and what is driving their exclusion from the labor market. 
+
+<br>
+
+<b>Figure Seven: Educational Attainment of Philadelphia's Young Adults, 2019</b>
+```{r fig.width=10, fig.align="center"}
+#All Youth Education and Employment/Enrollment
+p <- YR5_Person_Srvy %>% 
+  group_by(Opportunity_Youth, Education) %>%
+  summarize(total=survey_total(vartype="ci"),
+            share = survey_mean())%>%
+  drop_na()
+p$Education <- factor(p$Education, levels = c("Less than High School", "High School Diploma or GED", "Some College", "Associate's Degree", "Bachelor's Degree or Higher"))
+p %>% 
+  ggplot(aes(x=Opportunity_Youth, y=total, fill=Education, label = scales::percent(share, accuracy = 1)))+
+  geom_col(position=position_dodge(), color="white",alpha=.8)+
+  scale_fill_manual(values = c("#a39d93","#002d46","#005a8d", "#47525f", "#1f2935"))+
+  theme_minimal()+
+  geom_text(vjust=-.3,
+            position = position_dodge(.9), size=3.5, fontface="bold") +
+  scale_y_continuous(labels=comma_format(accuracy=1))+
+  labs(x=NULL,y="Young Adults")+
+  theme(
+        legend.position="bottom", legend.title=element_blank(), 
+        axis.text.x = element_text(face="bold"), 
+        axis.title.y = element_text(face="bold"),
+        panel.grid.major.x = element_blank())+
+          geom_hline(aes(yintercept = 0))
+```
+<i>Source: American Community Survey Five-Year Estimates, 2015-2019; IPUMS.</i> 
+
+<br>
+
+<b>Figure Eight: Work Status Among Philadelphia's Opportunity Youth, 2019</b>
+```{r fig.width=10, fig.align="center"}
+#Opportunity Youth Looking for Work
+YR5_Person_Srvy %>%
+  filter(Opportunity_Youth =="Opportunity Youth") %>%
+  group_by(Looking, High_school) %>%
+  summarize(total=survey_total(),
+            share = survey_mean()) %>%
+  drop_na()%>%
+  ggplot(aes(x=Looking, y=total, fill=High_school,label = scales::percent(share, accuracy = 1)))+
+  geom_col(position="stack", color="white",alpha=.8)+
+  theme_minimal()+
+  scale_fill_manual(values = c("#005a8d","#002d46"))+
+  geom_text(aes(label = scales::comma(round(total,-2))), vjust=-.5,
+            position = "stack", fontface="bold") +
+  geom_text(position = position_stack(vjust=.5), fontface="bold", color="white") +
+  scale_y_continuous(labels=comma_format(accuracy=1))+
+  labs(x=NULL,y="Young Adults")+
+  theme(legend.position="bottom", legend.title=element_blank(), 
+        axis.text.x = element_text(face="bold"), 
+        axis.title.y = element_text(face="bold"),
+        panel.grid.major.x = element_blank())+
+          geom_hline(aes(yintercept = 0))
+```
+<i>Source: American Community Survey Five-Year Estimates, 2015-2019; IPUMS.</i> 
+
+<br>
+<br>
+
+## **English Language Proficiency**
+In a similar manner to educational attainment, the ACS data also reveal that English language proficiency is not a significant barrier for the Opportunity Youth population, with nearly the entire cohort speaking English well, very well, or natively. The 1,400 individuals that are shown to speak less than well fall within the survey’s margin of error. 
+
+<br>
+
+<b>Figure Nine: English Language Proficiency of Philadelphia's Opportunity Youth, 2019</b>
+```{r fig.width=10, fig.align="center"}
+#English Language Ability of Philadelphia's Opportunity Youth
+YR5_Person_Srvy %>%
+  filter(Opportunity_Youth=="Opportunity Youth")%>%
+  group_by(English) %>%
+  summarize(total=survey_total(),
+            share = survey_mean())%>%
+  drop_na()%>%
+  ggplot(aes(x=reorder(English, -total), y=total))+
+  geom_col(color="white",alpha=.8, fill="#005a8d")+
+  theme_minimal()+
+  geom_text(aes(label = scales::comma(round(total,-2))), vjust=-.5,
+            position = "stack", fontface="bold") +
+  geom_text(aes(label = ifelse(share>=.1, scales::percent(share, accuracy = 1), "")),
+            position = position_stack(vjust=.5), fontface="bold", color="white") +
+  labs(x=NULL,y="Young Adults", 
+       subtitle="Answering the Question: Does the Individual Speak English?")+
+  theme(
+        legend.position="bottom", legend.title=element_blank(), 
+        axis.text.x = element_text(face="bold", margin=margin(t=-5)), 
+        axis.title.y = element_text(face="bold"),
+        axis.text.y = element_blank(),
+        plot.subtitle = element_text(hjust=0, margin = margin(b=10), face="italic", color="grey30"),
+        panel.grid.major.x = element_blank())+
+  geom_hline(aes(yintercept = 0))
+```
+<i>Source: American Community Survey Five-Year Estimates, 2015-2019; IPUMS.</i> 
+
+<br>
+<br>
+
+## **Demographic Profile**
+
+<b> Age: </b> By definition, Opportunity Youth are between the ages of 16 and 24. Nevertheless, rates of enrollment and employment vary across this age category. As shown in Figure Ten, Opportunity Youth are most prevalent above the age of 18. Beginning at 20, Opportunity Youth make up roughly 20% of the population in each individual age. Conversely, those below the age of 18 are much less likely to be disconnected. This follows the pattern of high school completion outlined above. 
+
+<b>Race:</b> Black or African American young adults represent the largest race category among Opportunity Youth. Of the 30,000 total, roughly 17,000 are Black or African American. An additional 7,000 identify as Latinx or Hispanic (Figure Eleven). For each of these categories, Opportunity Youth make up about one-fifth of all young people. By contrast, Asian or white young adults are far less likely to be disconnected, with rates of less than 10% for each. 
+
+<b>Binary Sex:</b> As of now, Census data is only provided by binary sex. Based on this binary, we can see that Opportunity Youth are much more likely to identify as male than female. For the employed or enrolled population, women represent a slightly larger share (Figure Twelve). 
+
+
+<br>
+
+<b>Figure Ten: Employed and Enrollment Status Among Philadelphia's Young Adults, 2019</b>
+```{r fig.width=10, fig.align="center"}
+#Age Distribution by Employed/Enrolled 
+YR5_Person_Srvy %>%
+  group_by(Age.Char, Opportunity_Youth) %>%
+  summarize(total=survey_total(),
+            share = survey_mean(vartype="ci")) %>%
+  drop_na()%>%
+  ggplot(aes(x=Age.Char, y=total, fill=Opportunity_Youth,label = ifelse(share>=.1, scales::percent(share, accuracy = 1), "")))+
+  geom_col(color="white",alpha=.8)+
+  theme_minimal()+
+  scale_fill_manual(values = c("#005a8d","#002d46"))+
+  geom_text(aes(label = scales::comma(round(total,-2))), vjust=-.5,
+            position = "stack", fontface="bold") +
+  geom_text(position=position_stack(vjust=.5), fontface="bold", color="white") +
+  scale_y_continuous(labels=comma_format(accuracy=1))+
+  labs(x=NULL,y="Young Adults")+
+  theme(
+        legend.position="bottom", legend.title=element_blank(), 
+        axis.text.x = element_text(face="bold", margin=margin(t=-5)), 
+        axis.title.y = element_text(face="bold"),
+        panel.grid.major.x = element_blank())+
+          geom_hline(aes(yintercept = 0))
+```
+<i>Source: American Community Survey Five-Year Estimates, 2015-2019; IPUMS.</i> 
+
+<br>
+
+<b>Figure Eleven: Philadelphia's Young Adults by Race or Ethnicity and Employment or Enrollment, 2019</b>
+```{r fig.width=10, fig.align="center"}
+#Race by Employed/Enrolled 
+YR5_Person_Srvy %>%
+  filter(Race.Eth != "American Indian") %>%
+  filter(Race.Eth != "Other Race") %>%
+  group_by(Race.Eth, Opportunity_Youth) %>%
+  summarize(total=survey_total(),
+            share = survey_mean())%>%
+  drop_na()%>%
+  ggplot(aes(x=Race.Eth, y=share, fill=Opportunity_Youth,label = ifelse(share>=.1, scales::percent(share, accuracy = 1), "")))+
+  geom_col(color="white",alpha=.8)+
+  theme_minimal()+
+  scale_fill_manual(values = c("#005a8d","#002d46"))+
+  geom_text(aes(label = scales::comma(round(total,-2))), vjust=-.5,
+            position = "stack", fontface="bold") +
+  geom_text(position=position_stack(vjust=.5), fontface="bold", color="white") +
+  scale_y_continuous(labels=percent_format(accuracy=1))+
+  labs(x=NULL,y="Young Adults")+
+  theme(
+        legend.position="bottom", legend.title=element_blank(), 
+        axis.text.x = element_text(face="bold", margin=margin(t=-5)), 
+        axis.title.y = element_text(face="bold"),
+        panel.grid.major.x = element_blank())+
+  geom_hline(aes(yintercept = 0))
+```
+<i>Source: American Community Survey Five-Year Estimates, 2015-2019; IPUMS.</i> 
+
+<br>
+
+<b>Figure Twelve: Philadelphia's Young Adults by Binary Sex and Employment or Enrollment, 2019</b>
+```{r fig.width=10, fig.align="center"}
+#All Youth Gender and Employment/Enrollment
+YR5_Person_Srvy %>% 
+  group_by(Opportunity_Youth, Sex) %>%
+  summarize(total=survey_total(),
+            share = survey_mean())%>%
+  drop_na()%>%
+  ggplot(aes(x=Opportunity_Youth, y=total, fill=Sex, label = scales::percent(share)))+
+  geom_col(position=position_dodge(), color="white",alpha=.8)+
+  scale_fill_manual(values = c("#002d46","#005a8d"))+
+  theme_minimal()+
+  geom_text(vjust=2, color="white",
+            position = position_dodge(0.9), size=4.5, fontface="bold") +
+  scale_y_continuous(labels=comma_format(accuracy=1))+
+  labs(x=NULL,y="Young Adults")+
+  theme(
+        legend.position="bottom", legend.title=element_blank(), 
+        axis.text.x = element_text(face="bold", size=11), 
+        axis.title.y = element_text(face="bold"),
+        panel.grid.major.x = element_blank())+
+          geom_hline(aes(yintercept = 0))
+```
+<i>Source: American Community Survey Five-Year Estimates, 2015-2019; IPUMS.</i> 
+
+
+<br>
+<br>
+```{r}
+knitr::include_graphics("/Users/matthew/OneDrive - Philadelphia Works Inc/Research and Special Reporting/Briefs/Opportunity Youth/Outputs and Data/Logo.png", error = FALSE)
+```
+
+
